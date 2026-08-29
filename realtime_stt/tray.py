@@ -10,13 +10,18 @@ logger = logging.getLogger(__name__)
 class TrayController:
     """Windows tray icon with thread-safe callbacks supplied by the Tk UI."""
 
-    def __init__(self, on_show: Callable[[], None], on_exit: Callable[[], None]) -> None:
+    def __init__(
+        self,
+        on_show: Callable[[], None],
+        on_exit: Callable[[], None],
+        tooltip: str = "Local Dictation",
+    ) -> None:
         self._on_show = on_show
         self._on_exit = on_exit
         self._icon = pystray.Icon(
             "local_dictation",
             self._make_icon(),
-            "Local Dictation",
+            tooltip,
             menu=pystray.Menu(
                 pystray.MenuItem("Show Local Dictation", self._show, default=True),
                 pystray.MenuItem("Exit", self._exit),
@@ -26,6 +31,12 @@ class TrayController:
     def start(self) -> None:
         self._icon.run_detached()
         logger.info("System tray icon started")
+
+    def set_tooltip(self, text: str) -> None:
+        try:
+            self._icon.title = text[:127]
+        except Exception:
+            logger.debug("Could not update tray tooltip", exc_info=True)
 
     def stop(self) -> None:
         try:

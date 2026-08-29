@@ -1,8 +1,12 @@
 import ctypes
+import ctypes.wintypes
 import logging
+import os
 import queue
 import time
 import tkinter as tk
+from collections import deque
+from pathlib import Path
 from tkinter import ttk
 
 from pynput import keyboard
@@ -14,6 +18,45 @@ from .settings import AppSettings
 from .tray import TrayController
 
 logger = logging.getLogger(__name__)
+
+PROJECT_DIR = Path(__file__).resolve().parent.parent
+VOCABULARY_PATH = PROJECT_DIR / "vocabulary.txt"
+
+DICTATION_MODES = {
+    "Hold to talk": "hold",
+    "Toggle": "toggle",
+    "Smart (tap toggles)": "smart",
+}
+OVERLAY_POSITIONS = {"Bottom": "bottom", "Top": "top"}
+
+# A tap shorter than this in Smart mode latches dictation on instead of ending it.
+SMART_TAP_SECONDS = 0.35
+
+
+class _MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", ctypes.wintypes.DWORD),
+        ("rcMonitor", ctypes.wintypes.RECT),
+        ("rcWork", ctypes.wintypes.RECT),
+        ("dwFlags", ctypes.wintypes.DWORD),
+    ]
+
+
+def enable_dark_title_bar(window: tk.Misc) -> None:
+    """Ask DWM for a dark title bar on Windows 10/11; harmless elsewhere."""
+    try:
+        window.update_idletasks()
+        raw_hwnd = int(window.winfo_id())
+        hwnd = int(ctypes.windll.user32.GetParent(raw_hwnd)) or raw_hwnd
+        value = ctypes.c_int(1)
+        for attribute in (20, 19):  # DWMWA_USE_IMMERSIVE_DARK_MODE (20; 19 pre-20H1)
+            result = ctypes.windll.dwmapi.DwmSetWindowAttribute(
+                hwnd, attribute, ctypes.byref(value), ctypes.sizeof(value)
+            )
+            if result == 0:
+                break
+    except Exception:
+        logger.debug("Could not enable dark title bar", exc_info=True)
 
 
 class DictationOverlay:
@@ -44,8 +87,12 @@ class DictationOverlay:
         self.canvas.pack()
         self.mode = "hidden"
         self.width = 680
+        self.position = "bottom"
+        self.target_hwnd = 0
         self._animation_frame = 0
         self._bar_ids: list[int] = []
+        self._text_id: int | None = None
+        self._levels: deque[int] = deque(maxlen=5)
 
         self.window.update_idletasks()
         raw_hwnd = int(self.window.winfo_id())
@@ -68,11 +115,16 @@ class DictationOverlay:
 
     def show_message(self, text: str) -> None:
         self.mode = "message"
-        self._draw(260, text, show_bars=False)
+        self._draw(320, text, show_bars=False)
         self._show_without_activation()
+
+    def set_level(self, rms: int) -> None:
+        """Feed a live microphone RMS sample to drive the VU bars."""
+        self._levels.append(int(rms))
 
     def hide(self) -> None:
         self.mode = "hidden"
+        self._levels.clear()
         ctypes.windll.user32.ShowWindow(self.hwnd, 0)
 
     def _draw(self, width: int, text: str, show_bars: bool) -> None:
@@ -83,7 +135,7 @@ class DictationOverlay:
 
         self._rounded_rectangle(3, 6, width - 3, self.HEIGHT - 6, 25, "#252525", "#696969")
         text_x = (width - 55) / 2 if show_bars else width / 2
-        self.canvas.create_text(
+        self._text_id = self.canvas.create_text(
             text_x,
             self.HEIGHT / 2,
             text=text,
@@ -143,18 +195,28 @@ class DictationOverlay:
 
     def _animate(self) -> None:
         if self.mode == "listening" and self._bar_ids:
-            patterns = (
-                (8, 15, 22, 13, 7),
-                (15, 24, 11, 20, 10),
-                (22, 10, 18, 8, 19),
-                (11, 19, 8, 24, 14),
-            )
-            heights = patterns[self._animation_frame % len(patterns)]
             center = self.HEIGHT / 2
+            levels = list(self._levels)
+            if levels:
+                # Real VU meter: newest sample on the right, 5 px floor.
+                heights = [5 + min(21, level // 150) for level in levels]
+                heights = [5] * (5 - len(heights)) + heights
+            else:
+                patterns = (
+                    (8, 15, 22, 13, 7),
+                    (15, 24, 11, 20, 10),
+                    (22, 10, 18, 8, 19),
+                    (11, 19, 8, 24, 14),
+                )
+                heights = list(patterns[self._animation_frame % len(patterns)])
             for bar_id, height in zip(self._bar_ids, heights):
                 coords = self.canvas.coords(bar_id)
                 x = coords[0]
                 self.canvas.coords(bar_id, x, center - height / 2, x, center + height / 2)
+            self._animation_frame += 1
+        elif self.mode == "thinking" and self._text_id is not None:
+            dots = "." * (self._animation_frame % 4)
+            self.canvas.itemconfigure(self._text_id, text=f"Thinking{dots}")
             self._animation_frame += 1
         self.window.after(90, self._animate)
 
@@ -170,12 +232,27 @@ class DictationOverlay:
             style | ws_ex_toolwindow | ws_ex_noactivate,
         )
 
+    def _work_area(self) -> tuple[int, int, int, int]:
+        """Work area of the monitor hosting the target window (or primary)."""
+        user32 = ctypes.windll.user32
+        if self.target_hwnd and user32.IsWindow(self.target_hwnd):
+            monitor_default_to_nearest = 2
+            monitor = user32.MonitorFromWindow(self.target_hwnd, monitor_default_to_nearest)
+            info = _MONITORINFO()
+            info.cbSize = ctypes.sizeof(_MONITORINFO)
+            if monitor and user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+                work = info.rcWork
+                return work.left, work.top, work.right, work.bottom
+        return 0, 0, user32.GetSystemMetrics(0), user32.GetSystemMetrics(1)
+
     def _show_without_activation(self) -> None:
         user32 = ctypes.windll.user32
-        screen_width = user32.GetSystemMetrics(0)
-        screen_height = user32.GetSystemMetrics(1)
-        x = (screen_width - self.width) // 2
-        y = screen_height - self.HEIGHT - 55
+        left, top, right, bottom = self._work_area()
+        x = left + (right - left - self.width) // 2
+        if self.position == "top":
+            y = top + 55
+        else:
+            y = bottom - self.HEIGHT - 55
         # Keep Tk's own requested geometry aligned with the native HWND so its
         # geometry manager does not move the restored overlay back to (0, 0).
         self.window.geometry(f"{self.width}x{self.HEIGHT}+{x}+{y}")
@@ -198,7 +275,7 @@ class DictationOverlay:
 
 
 class TranscriptWindow:
-    """Small controller plus a global hold-to-talk dictation overlay."""
+    """Small controller plus a global hold/toggle dictation overlay."""
 
     def __init__(
         self,
@@ -219,15 +296,28 @@ class TranscriptWindow:
         self.target_window = 0
         self.thinking_started_at = 0.0
         self._paste_controller = keyboard.Controller()
+        self._latched = False
+        self._key_down_at = 0.0
+        self._entry_count = 0
+        self._entries: dict[str, str] = {}
         self.microphone_options: dict[str, int] = {}
         for index, name in self.pipeline.microphone.available_input_devices():
             label = name if name not in self.microphone_options else f"{name} [{index}]"
             self.microphone_options[label] = index
 
+        saved = settings.load() if settings is not None else {}
+        self.dictation_mode = saved.get("dictation_mode", "hold")
+        if self.dictation_mode not in DICTATION_MODES.values():
+            self.dictation_mode = "hold"
+        overlay_position = saved.get("overlay_position", "bottom")
+        if overlay_position not in OVERLAY_POSITIONS.values():
+            overlay_position = "bottom"
+
         root.title("Local Dictation")
-        root.geometry("760x620")
-        root.minsize(660, 540)
+        root.geometry("760x680")
+        root.minsize(660, 590)
         root.configure(bg="#111318")
+        enable_dark_title_bar(root)
 
         style = ttk.Style(root)
         style.theme_use("clam")
@@ -316,6 +406,68 @@ class TranscriptWindow:
             style="Dark.TButton",
         ).pack(side="left", padx=(8, 0))
 
+        modes = ttk.Frame(card, style="Card.TFrame")
+        modes.pack(fill="x", pady=(10, 0))
+        ttk.Label(modes, text="Mode", style="Card.TLabel").pack(side="left", padx=(0, 8))
+        mode_label = next(
+            (label for label, value in DICTATION_MODES.items() if value == self.dictation_mode),
+            "Hold to talk",
+        )
+        self.mode_choice = tk.StringVar(value=mode_label)
+        mode_picker = ttk.Combobox(
+            modes,
+            textvariable=self.mode_choice,
+            values=tuple(DICTATION_MODES),
+            width=18,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        mode_picker.pack(side="left")
+        mode_picker.bind("<<ComboboxSelected>>", self._apply_mode)
+
+        ttk.Label(modes, text="Overlay", style="Card.TLabel").pack(side="left", padx=(20, 8))
+        position_label = next(
+            (label for label, value in OVERLAY_POSITIONS.items() if value == overlay_position),
+            "Bottom",
+        )
+        self.position_choice = tk.StringVar(value=position_label)
+        position_picker = ttk.Combobox(
+            modes,
+            textvariable=self.position_choice,
+            values=tuple(OVERLAY_POSITIONS),
+            width=8,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        position_picker.pack(side="left")
+        position_picker.bind("<<ComboboxSelected>>", self._apply_overlay_position)
+
+        ttk.Button(
+            modes,
+            text="Edit vocabulary",
+            command=self._edit_vocabulary,
+            style="Dark.TButton",
+        ).pack(side="right")
+
+        tuning = ttk.Frame(card, style="Card.TFrame")
+        tuning.pack(fill="x", pady=(10, 0))
+        ttk.Label(tuning, text="Speech threshold", style="Card.TLabel").pack(side="left", padx=(0, 8))
+        self.threshold_var = tk.StringVar(
+            value=str(getattr(self.pipeline.stt, "speech_rms_threshold", 650))
+        )
+        self._dark_entry(tuning, self.threshold_var, width=7).pack(side="left")
+        ttk.Label(tuning, text="Silence (ms)", style="Card.TLabel").pack(side="left", padx=(20, 8))
+        self.silence_var = tk.StringVar(
+            value=str(getattr(self.pipeline.stt, "final_silence_ms", 700))
+        )
+        self._dark_entry(tuning, self.silence_var, width=7).pack(side="left")
+        ttk.Button(
+            tuning,
+            text="Apply tuning",
+            command=self._apply_tuning,
+            style="Dark.TButton",
+        ).pack(side="left", padx=(12, 0))
+
         ttk.Label(frame, text="Recent dictation", style="Body.TLabel").pack(anchor="w", pady=(18, 6))
         self.history = tk.Text(
             frame,
@@ -331,7 +483,9 @@ class TranscriptWindow:
             selectbackground="#365f9d",
         )
         self.history.pack(fill="both", expand=True)
+        self.history.tag_configure("ts", foreground="#6a7382", font=("Segoe UI", 9))
         self.history.configure(state="disabled")
+        self.history.bind("<Button-3>", self._show_history_menu)
 
         buttons = ttk.Frame(frame, style="App.TFrame")
         buttons.pack(fill="x", pady=(14, 0))
@@ -340,11 +494,14 @@ class TranscriptWindow:
         ttk.Button(buttons, text="Exit", command=self.close, style="Dark.TButton").pack(side="right")
 
         self.overlay = DictationOverlay(root)
+        self.overlay.position = overlay_position
+        self.pipeline.on_level = lambda rms: self.messages.put(("level", rms))
         self.hotkey = self._new_hotkey(self.hold_key)
         self.hotkey.start()
         self.tray = TrayController(
             lambda: self.messages.put(("tray_show", None)),
             lambda: self.messages.put(("tray_exit", None)),
+            tooltip=f"Local Dictation — {self._ready_hint()}",
         )
         self.tray.start()
 
@@ -352,6 +509,22 @@ class TranscriptWindow:
         root.bind("<Unmap>", self._on_unmap)
         root.after(30, self._drain_messages)
         root.after(100, self._start)
+
+    @staticmethod
+    def _dark_entry(parent: tk.Misc, variable: tk.StringVar, width: int) -> tk.Entry:
+        return tk.Entry(
+            parent,
+            textvariable=variable,
+            width=width,
+            font=("Segoe UI", 10),
+            bg="#282e39",
+            fg="#f4f7fb",
+            insertbackground="#f4f7fb",
+            relief="flat",
+            highlightthickness=1,
+            highlightbackground="#3c4656",
+            highlightcolor="#72e0a8",
+        )
 
     def _start(self) -> None:
         try:
@@ -367,13 +540,27 @@ class TranscriptWindow:
             lambda: self.messages.put(("hotkey_up", None)),
         )
 
+    def _ready_hint(self) -> str:
+        key = self.hold_key.upper()
+        if self.dictation_mode == "toggle":
+            return f"press {key} to start/stop"
+        if self.dictation_mode == "smart":
+            return f"tap or hold {key}"
+        return f"hold {key} in any application"
+
+    def _set_ready_status(self) -> None:
+        self.status.set(f"Ready — {self._ready_hint()}")
+
+    def _update_tray_tooltip(self) -> None:
+        self.tray.set_tooltip(f"Local Dictation — {self._ready_hint()}")
+
     def _apply_shortcut(self) -> None:
         if self.mode != "idle":
             self.status.set("Finish the current dictation before changing the shortcut")
             return
         new_key = self.shortcut.get().strip().lower()
         if new_key == self.hold_key:
-            self.status.set(f"Ready — hold {self.hold_key.upper()} in any application")
+            self._set_ready_status()
             return
 
         old_key = self.hold_key
@@ -392,10 +579,11 @@ class TranscriptWindow:
         self.hotkey = replacement
         self.hold_key = new_key
         self._update_instruction()
+        self._update_tray_tooltip()
         try:
             if self.settings is not None:
                 self.settings.set("hold_key", new_key)
-            self.status.set(f"Shortcut saved — hold {new_key.upper()} in any application")
+            self.status.set(f"Shortcut saved — {self._ready_hint()}")
             logger.info("Changed and saved hold-to-talk shortcut: %s", new_key.upper())
         except OSError as exc:
             logger.exception("Shortcut changed but could not be saved")
@@ -427,15 +615,97 @@ class TranscriptWindow:
             self.microphone.set(current_label)
             self.status.set(f"Microphone error: {exc}")
 
+    def _apply_mode(self, _event=None) -> None:
+        value = DICTATION_MODES.get(self.mode_choice.get(), "hold")
+        if value == self.dictation_mode:
+            return
+        self.dictation_mode = value
+        self._latched = False
+        self._update_instruction()
+        self._update_tray_tooltip()
+        if self.settings is not None:
+            try:
+                self.settings.set("dictation_mode", value)
+            except OSError:
+                logger.exception("Could not save dictation mode")
+        if self.ready and self.mode == "idle":
+            self._set_ready_status()
+        logger.info("Dictation mode set to: %s", value)
+
+    def _apply_overlay_position(self, _event=None) -> None:
+        value = OVERLAY_POSITIONS.get(self.position_choice.get(), "bottom")
+        self.overlay.position = value
+        if self.settings is not None:
+            try:
+                self.settings.set("overlay_position", value)
+            except OSError:
+                logger.exception("Could not save overlay position")
+        logger.info("Overlay position set to: %s", value)
+
+    def _apply_tuning(self) -> None:
+        try:
+            threshold = int(self.threshold_var.get().strip())
+            silence = int(self.silence_var.get().strip())
+            if threshold < 50 or silence < 200:
+                raise ValueError("out of range")
+        except ValueError:
+            self.status.set("Tuning must be numbers — threshold ≥ 50, silence ≥ 200 ms")
+            return
+
+        stt = self.pipeline.stt
+        if hasattr(stt, "speech_rms_threshold"):
+            stt.speech_rms_threshold = threshold
+        if hasattr(stt, "final_silence_ms"):
+            stt.final_silence_ms = silence
+        if self.settings is not None:
+            try:
+                self.settings.set("speech_rms_threshold", str(threshold))
+                self.settings.set("final_silence_ms", str(silence))
+            except OSError:
+                logger.exception("Could not save tuning")
+        self.status.set(f"Tuning saved — threshold {threshold}, silence {silence} ms")
+        logger.info("Tuning applied: threshold=%d silence_ms=%d", threshold, silence)
+
+    def _edit_vocabulary(self) -> None:
+        try:
+            if not VOCABULARY_PATH.exists():
+                VOCABULARY_PATH.write_text(
+                    "# Custom vocabulary for dictation.\n"
+                    "# One term per line (or comma separated). Lines starting with # are ignored.\n"
+                    "# Changes apply automatically on the next dictation.\n",
+                    encoding="utf-8",
+                )
+            os.startfile(VOCABULARY_PATH)
+            self.status.set("Vocabulary opened — edits apply on the next dictation")
+        except Exception as exc:
+            logger.exception("Could not open vocabulary file")
+            self.status.set(f"Vocabulary error: {exc}")
+
     def _update_instruction(self) -> None:
-        self.instruction.set(
-            f"Hold {self.hold_key.upper()} while speaking. Release to finalize and paste into the focused application."
-        )
+        key = self.hold_key.upper()
+        if self.dictation_mode == "toggle":
+            text = (
+                f"Press {key} to start dictating; press it again to finalize "
+                "and paste into the focused application."
+            )
+        elif self.dictation_mode == "smart":
+            text = (
+                f"Tap {key} to toggle dictation on and off, or hold it like "
+                "push-to-talk. Text pastes into the focused application."
+            )
+        else:
+            text = (
+                f"Hold {key} while speaking. Release to finalize and paste "
+                "into the focused application."
+            )
+        self.instruction.set(text)
 
     def _clear_history(self) -> None:
         self.history.configure(state="normal")
         self.history.delete("1.0", "end")
         self.history.configure(state="disabled")
+        self._entries.clear()
+        self._entry_count = 0
 
     def on_transcript(self, event: TranscriptEvent) -> None:
         self.messages.put(("transcript", event))
@@ -450,31 +720,38 @@ class TranscriptWindow:
             except queue.Empty:
                 break
 
-            if kind == "transcript":
-                self._apply_transcript(payload)  # type: ignore[arg-type]
-            elif kind == "state":
-                state, detail = payload  # type: ignore[misc]
-                self._apply_state(state, detail)
-            elif kind == "hotkey_down":
-                self._begin_dictation(int(payload))
-            elif kind == "hotkey_up":
-                self._end_dictation()
-            elif kind == "tray_show":
-                self._show_from_tray()
-            elif kind == "tray_exit":
-                self.close()
+            try:
+                if kind == "transcript":
+                    self._apply_transcript(payload)  # type: ignore[arg-type]
+                elif kind == "state":
+                    state, detail = payload  # type: ignore[misc]
+                    self._apply_state(state, detail)
+                elif kind == "hotkey_down":
+                    self._on_hotkey_down(int(payload))
+                elif kind == "hotkey_up":
+                    self._on_hotkey_up()
+                elif kind == "level":
+                    self.overlay.set_level(int(payload))
+                elif kind == "tray_show":
+                    self._show_from_tray()
+                elif kind == "tray_exit":
+                    self.close()
+            except Exception:
+                # One bad event must never kill the UI loop.
+                logger.exception("UI message handler failed for %r", kind)
 
         self.root.after(30, self._drain_messages)
 
     def _apply_state(self, state: str, detail: str) -> None:
         if state == "connected":
             self.ready = True
-            self.status.set(f"Ready — hold {self.hold_key.upper()} in any application")
+            self._set_ready_status()
         elif state == "capture_finalized":
             self._finish_dictation()
         elif state == "error":
             self.ready = False
             self.mode = "idle"
+            self._latched = False
             self.overlay.show_message("Transcription error")
             self.root.after(1200, self.overlay.hide)
             self.status.set(f"Error: {detail}")
@@ -483,6 +760,35 @@ class TranscriptWindow:
         elif not self.ready:
             self.status.set(detail)
 
+    def _on_hotkey_down(self, target_window: int) -> None:
+        if self.mode == "listening":
+            # Second press ends a toggled/latched dictation.
+            if self.dictation_mode == "toggle" or (
+                self.dictation_mode == "smart" and self._latched
+            ):
+                self._latched = False
+                self._end_dictation()
+            return
+        if self.mode != "idle":
+            return
+        self._key_down_at = time.perf_counter()
+        self._latched = False
+        self._begin_dictation(target_window)
+
+    def _on_hotkey_up(self) -> None:
+        if self.mode != "listening":
+            return
+        if self.dictation_mode == "hold":
+            self._end_dictation()
+        elif self.dictation_mode == "smart":
+            held_seconds = time.perf_counter() - self._key_down_at
+            if held_seconds < SMART_TAP_SECONDS:
+                self._latched = True
+                self.status.set(f"Listening… tap {self.hold_key.upper()} to finish")
+            else:
+                self._end_dictation()
+        # Toggle mode ignores key-up entirely.
+
     def _begin_dictation(self, target_window: int) -> None:
         if not self.ready or self.mode != "idle":
             return
@@ -490,15 +796,23 @@ class TranscriptWindow:
             return
         self.mode = "listening"
         self.target_window = target_window
+        self.overlay.target_hwnd = target_window
         self.final_segments = []
         self.partial_text = ""
-        self.status.set("Listening… release the key to paste")
+        key = self.hold_key.upper()
+        if self.dictation_mode == "toggle":
+            self.status.set(f"Listening… press {key} again to paste")
+        elif self.dictation_mode == "smart":
+            self.status.set(f"Listening… release or tap {key} again")
+        else:
+            self.status.set("Listening… release the key to paste")
         self.overlay.show_listening()
 
     def _end_dictation(self) -> None:
         if self.mode != "listening":
             return
         self.mode = "thinking"
+        self._latched = False
         self.thinking_started_at = time.perf_counter()
         self.status.set("Thinking…")
         self.overlay.show_thinking()
@@ -527,7 +841,7 @@ class TranscriptWindow:
     def _paste_or_report(self, text: str) -> None:
         if not text:
             self.overlay.show_message("No speech detected")
-            self.status.set(f"Ready — hold {self.hold_key.upper()} in any application")
+            self._set_ready_status()
             self.mode = "idle"
             self.root.after(900, self.overlay.hide)
             return
@@ -539,15 +853,32 @@ class TranscriptWindow:
             # this, consecutive dictations become "coolIt" or "fastOkay".
             self.root.clipboard_append(text.rstrip() + " ")
             self.root.update_idletasks()
-            if self.target_window and ctypes.windll.user32.IsWindow(self.target_window):
-                ctypes.windll.user32.SetForegroundWindow(self.target_window)
-            self.root.after(60, self._send_paste)
         except Exception as exc:
             logger.exception("Could not place dictation on the clipboard")
             self.status.set(f"Paste error: {exc}")
             self.overlay.show_message("Copied text unavailable")
             self.mode = "idle"
             self.root.after(1200, self.overlay.hide)
+            return
+
+        user32 = ctypes.windll.user32
+        focused = False
+        if self.target_window and user32.IsWindow(self.target_window):
+            focused = bool(user32.SetForegroundWindow(self.target_window))
+        if not focused:
+            # Elevated (admin) apps and closed windows land here; don't paste
+            # blind into whatever happens to have focus.
+            logger.warning("Could not focus target HWND=%s; paste skipped", self.target_window)
+            self.overlay.show_message("Paste blocked — text is on the clipboard")
+            self.status.set(
+                "Could not focus the target window (admin app?). "
+                "Text is on the clipboard — paste it manually."
+            )
+            self.mode = "idle"
+            self.root.after(1600, self.overlay.hide)
+            return
+
+        self.root.after(60, self._send_paste)
 
     def _send_paste(self) -> None:
         try:
@@ -556,7 +887,7 @@ class TranscriptWindow:
             self._paste_controller.release("v")
             self._paste_controller.release(keyboard.Key.ctrl_l)
             logger.info("Pasted finalized dictation into HWND=%s", self.target_window)
-            self.status.set(f"Ready — hold {self.hold_key.upper()} in any application")
+            self._set_ready_status()
         except Exception as exc:
             logger.exception("Could not send Ctrl+V")
             self.status.set(f"Paste error: {exc}; text remains on the clipboard")
@@ -593,9 +924,49 @@ class TranscriptWindow:
         self.history.configure(state="normal")
         if self.history.get("1.0", "end-1c"):
             self.history.insert("end", "\n\n")
-        self.history.insert("end", text)
+        tag = f"entry{self._entry_count}"
+        self._entry_count += 1
+        self._entries[tag] = text
+        self.history.insert("end", time.strftime("%H:%M") + "  ", ("ts",))
+        self.history.insert("end", text, (tag,))
         self.history.see("end")
         self.history.configure(state="disabled")
+
+    def _show_history_menu(self, event) -> None:
+        menu = tk.Menu(
+            self.root,
+            tearoff=0,
+            bg="#1c2028",
+            fg="#e6ebf2",
+            activebackground="#365f9d",
+            activeforeground="#ffffff",
+            relief="flat",
+        )
+        index = self.history.index(f"@{event.x},{event.y}")
+        entry_tags = [t for t in self.history.tag_names(index) if t.startswith("entry")]
+        if entry_tags:
+            entry_text = self._entries.get(entry_tags[0], "")
+            if entry_text:
+                menu.add_command(
+                    label="Copy this entry",
+                    command=lambda t=entry_text: self._copy_text(t),
+                )
+        if self._entries:
+            menu.add_command(
+                label="Copy all",
+                command=lambda: self._copy_text("\n\n".join(self._entries.values())),
+            )
+        if menu.index("end") is not None:
+            menu.tk_popup(event.x_root, event.y_root)
+
+    def _copy_text(self, text: str) -> None:
+        try:
+            self.root.clipboard_clear()
+            self.root.clipboard_append(text)
+            self.status.set("Copied to clipboard")
+        except Exception as exc:
+            logger.exception("Could not copy history text")
+            self.status.set(f"Copy error: {exc}")
 
     def close(self) -> None:
         self.ready = False

@@ -15,6 +15,7 @@ class TranscriptionPipeline:
     def __init__(self, microphone: MicrophoneCapture, stt: StreamingSTT) -> None:
         self.microphone = microphone
         self.stt = stt
+        self.on_level: Callable[[int], None] | None = None
         self._running = False
         self._capturing = False
         self._capture_lock = threading.Lock()
@@ -63,6 +64,8 @@ class TranscriptionPipeline:
         with self._capture_lock:
             if self._capturing:
                 self.stt.send_audio(chunk)
+                if self.on_level is not None:
+                    self.on_level(chunk.rms)
 
     def stop(self) -> None:
         if not self._running:

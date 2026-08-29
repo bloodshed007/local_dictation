@@ -9,6 +9,24 @@ A small Windows dictation app modeled on the Speakly interaction:
 
 The default engine is **faster-whisper Small on CUDA**. Inference is local; no API key or cloud transcription is used.
 
+## Dictation modes — 2026-08-30
+
+The **Mode** dropdown in the controller selects how the dictation key behaves (saved to `settings.json`):
+
+- **Hold to talk** — the original behavior: hold the key while speaking, release to paste.
+- **Toggle** — press once to start, press again to finalize and paste. Best for long dictations.
+- **Smart (tap toggles)** — a quick tap (< 350 ms) latches dictation on until the next tap; holding the key still works exactly like push-to-talk.
+
+Other additions from the same session:
+
+- **Live VU meter** — the overlay bars now show real microphone level (RMS) instead of a canned animation, so a silent mic is instantly visible.
+- **Animated Thinking** indicator, dark title bar, tray tooltip that shows the active key/mode.
+- **Overlay position** — Bottom or Top of the screen, and the overlay follows the monitor of the target window on multi-monitor setups.
+- **Paste-failure feedback** — if the target window cannot be focused (admin app, closed window), the app no longer pastes blind; the overlay says the text is on the clipboard.
+- **History timestamps + right-click copy** — each entry is time-stamped; right-click for "Copy this entry" / "Copy all".
+- **Live tuning** — Speech threshold (RMS) and Silence (ms) can be changed in the UI without restart; saved to `settings.json`, which overrides `.env`.
+- **Custom vocabulary** — click **Edit vocabulary** to open `vocabulary.txt` (one term per line or comma separated, `#` comments). Terms are fed to Whisper as an initial prompt and hot-reload on the next dictation. Use it for domain terms: tickers, EBITDA, CUDA, product names.
+
 ## Known-good snapshot — 2026-08-29
 
 Verified on an RTX 4060 Laptop GPU with `Headset (OnePlus Buds 4)`:
@@ -95,7 +113,8 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
 |---|---|
 | `Start Local Dictation.vbs` | One-click, console-free entry point |
 | `run.ps1` | PowerShell launcher, duplicate detection, file-log redirection |
-| `settings.json` | User-selected hold key; created after Apply |
+| `settings.json` | Hold key, mode, overlay position, tuning, microphone; created after Apply |
+| `vocabulary.txt` | Optional domain terms fed to Whisper as an initial prompt |
 | `.env` | Local engine/CUDA/microphone overrides; ignored by Git |
 | `realtime_stt/ui.py` | Controller, microphone/key settings, overlay, clipboard paste |
 | `realtime_stt/tray.py` | System-tray icon with Show and Exit actions |

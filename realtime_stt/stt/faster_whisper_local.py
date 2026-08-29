@@ -30,6 +30,7 @@ class FasterWhisperStreamingSTT(StreamingSTT):
         decode_interval_ms: int = 500,
         final_silence_ms: int = 700,
         max_utterance_seconds: int = 30,
+        vocab_path: Path | None = None,
     ) -> None:
         self.sample_rate = sample_rate
         self.model_name = model_name
@@ -40,6 +41,9 @@ class FasterWhisperStreamingSTT(StreamingSTT):
         self.decode_interval_seconds = decode_interval_ms / 1000.0
         self.final_silence_ms = final_silence_ms
         self.max_utterance_seconds = max_utterance_seconds
+        self.vocab_path = vocab_path
+        self._vocab_mtime: float | None = None
+        self._vocab_prompt: str | None = None
 
         self._audio_queue: queue.Queue[AudioChunk | object] = queue.Queue(maxsize=400)
         self._stop_event = threading.Event()
@@ -224,6 +228,7 @@ class FasterWhisperStreamingSTT(StreamingSTT):
                 "min_silence_duration_ms": 500,
                 "speech_pad_ms": 200,
             },
+            initial_prompt=self._current_prompt(),
         )
         text = " ".join(segment.text.strip() for segment in segments if segment.text.strip()).strip()
         inference_ms = (time.perf_counter() - started_at) * 1000.0
@@ -266,6 +271,34 @@ class FasterWhisperStreamingSTT(StreamingSTT):
                     first_transcript_ms=first_transcript_ms,
                 )
             )
+
+    def _current_prompt(self) -> str | None:
+        """Domain vocabulary as an initial prompt, hot-reloaded on file change."""
+        path = self.vocab_path
+        if path is None:
+            return None
+        try:
+            mtime = path.stat().st_mtime
+        except OSError:
+            self._vocab_mtime = None
+            self._vocab_prompt = None
+            return None
+        if mtime != self._vocab_mtime:
+            self._vocab_mtime = mtime
+            terms: list[str] = []
+            try:
+                for line in path.read_text(encoding="utf-8").splitlines():
+                    line = line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+                    terms.extend(part.strip() for part in line.split(",") if part.strip())
+            except OSError:
+                logger.exception("Could not read vocabulary file: %s", path)
+                return self._vocab_prompt
+            terms = terms[:120]  # keep well inside Whisper's prompt budget
+            self._vocab_prompt = f"Glossary: {', '.join(terms)}." if terms else None
+            logger.info("Vocabulary reloaded: %d terms", len(terms))
+        return self._vocab_prompt
 
     def _warm_up(self, model) -> None:
         """Pay one-time CUDA/kernel startup cost before reporting ready."""
