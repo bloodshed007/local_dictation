@@ -53,6 +53,12 @@ class TranscriptionPipeline:
         logger.info("Push-to-talk capture ended; finalization requested")
         return True
 
+    def change_microphone(self, device: str | int) -> str:
+        with self._capture_lock:
+            if self._capturing:
+                raise RuntimeError("Release the dictation key before changing microphone")
+            return self.microphone.switch_device(device)
+
     def _on_audio(self, chunk: AudioChunk) -> None:
         with self._capture_lock:
             if self._capturing:

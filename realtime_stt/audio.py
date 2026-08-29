@@ -52,6 +52,49 @@ class MicrophoneCapture:
             self.chunk_ms,
         )
 
+    def switch_device(self, device: str | int) -> str:
+        """Switch the open input stream without touching the STT model."""
+        resolved = self._resolve_device(device)
+        if resolved == self.device:
+            return self.current_device_name()
+
+        callback = self._on_audio
+        old_device = self.device
+        was_running = self._stream is not None
+        if was_running:
+            self._close_stream(clear_callback=False)
+
+        self.device = resolved
+        try:
+            if was_running and callback is not None:
+                self.start(callback)
+        except Exception:
+            logger.exception("Could not open microphone %s; restoring prior device", device)
+            self.device = old_device
+            if was_running and callback is not None:
+                self.start(callback)
+            raise
+
+        name = self.current_device_name()
+        logger.info("Microphone switched to: %s", name)
+        return name
+
+    def current_device_name(self) -> str:
+        return str(sd.query_devices(self.device, kind="input")["name"])
+
+    def available_input_devices(self) -> list[tuple[int, str]]:
+        """Return physical inputs from the default Windows host API."""
+        host_api = int(sd.default.hostapi)
+        result = []
+        for index, candidate in enumerate(sd.query_devices()):
+            if candidate["max_input_channels"] <= 0 or candidate["hostapi"] != host_api:
+                continue
+            name = str(candidate["name"])
+            if name.casefold().startswith("microsoft sound mapper"):
+                continue
+            result.append((index, name))
+        return result
+
     def _callback(self, indata, frames, _time_info, status) -> None:
         if status:
             logger.warning("Microphone status: %s", status)
@@ -94,10 +137,14 @@ class MicrophoneCapture:
             return int(default_input)
         return matches[0]
 
-    def stop(self) -> None:
+    def _close_stream(self, clear_callback: bool) -> None:
         stream, self._stream = self._stream, None
-        self._on_audio = None
+        if clear_callback:
+            self._on_audio = None
         if stream is not None:
             stream.stop()
             stream.close()
             logger.info("Microphone stopped")
+
+    def stop(self) -> None:
+        self._close_stream(clear_callback=True)

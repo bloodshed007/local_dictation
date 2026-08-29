@@ -53,7 +53,7 @@ def main() -> None:
     microphone = MicrophoneCapture(
         sample_rate=sample_rate,
         chunk_ms=50,
-        device=os.getenv("STT_MIC_DEVICE") or None,
+        device=saved_settings.get("microphone", os.getenv("STT_MIC_DEVICE", "")) or None,
     )
     pipeline = TranscriptionPipeline(microphone, build_provider(sample_rate))
 

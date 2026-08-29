@@ -11,6 +11,7 @@ from .events import TranscriptEvent
 from .hotkey import GlobalHoldHotkey
 from .pipeline import TranscriptionPipeline
 from .settings import AppSettings
+from .tray import TrayController
 
 logger = logging.getLogger(__name__)
 
@@ -218,10 +219,14 @@ class TranscriptWindow:
         self.target_window = 0
         self.thinking_started_at = 0.0
         self._paste_controller = keyboard.Controller()
+        self.microphone_options: dict[str, int] = {}
+        for index, name in self.pipeline.microphone.available_input_devices():
+            label = name if name not in self.microphone_options else f"{name} [{index}]"
+            self.microphone_options[label] = index
 
         root.title("Local Dictation")
-        root.geometry("720x600")
-        root.minsize(620, 520)
+        root.geometry("760x620")
+        root.minsize(660, 540)
         root.configure(bg="#111318")
 
         style = ttk.Style(root)
@@ -266,12 +271,14 @@ class TranscriptWindow:
         card.pack(fill="x")
         self.status = tk.StringVar(value="Starting local model…")
         self.status_label = ttk.Label(card, textvariable=self.status, style="Status.TLabel")
-        self.status_label.pack(side="left", fill="x", expand=True)
+        self.status_label.pack(anchor="w", fill="x")
 
-        ttk.Label(card, text="Hold key", style="Card.TLabel").pack(side="left", padx=(12, 8))
+        controls = ttk.Frame(card, style="Card.TFrame")
+        controls.pack(fill="x", pady=(12, 0))
+        ttk.Label(controls, text="Hold key", style="Card.TLabel").pack(side="left", padx=(0, 8))
         self.shortcut = tk.StringVar(value=self.hold_key.upper())
         shortcut_picker = ttk.Combobox(
-            card,
+            controls,
             textvariable=self.shortcut,
             values=tuple(f"F{number}" for number in range(6, 13)),
             width=6,
@@ -280,9 +287,32 @@ class TranscriptWindow:
         )
         shortcut_picker.pack(side="left")
         ttk.Button(
-            card,
-            text="Apply",
+            controls,
+            text="Apply key",
             command=self._apply_shortcut,
+            style="Dark.TButton",
+        ).pack(side="left", padx=(8, 20))
+
+        ttk.Label(controls, text="Microphone", style="Card.TLabel").pack(side="left", padx=(0, 8))
+        current_microphone = self.pipeline.microphone.current_device_name()
+        selected_label = next(
+            (label for label in self.microphone_options if label.startswith(current_microphone)),
+            current_microphone,
+        )
+        self.microphone = tk.StringVar(value=selected_label)
+        microphone_picker = ttk.Combobox(
+            controls,
+            textvariable=self.microphone,
+            values=tuple(self.microphone_options),
+            width=29,
+            state="readonly",
+            style="Dark.TCombobox",
+        )
+        microphone_picker.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            controls,
+            text="Apply mic",
+            command=self._apply_microphone,
             style="Dark.TButton",
         ).pack(side="left", padx=(8, 0))
 
@@ -305,15 +335,21 @@ class TranscriptWindow:
 
         buttons = ttk.Frame(frame, style="App.TFrame")
         buttons.pack(fill="x", pady=(14, 0))
-        ttk.Button(buttons, text="Minimize", command=root.iconify, style="Dark.TButton").pack(side="left")
+        ttk.Button(buttons, text="Minimize to tray", command=self._hide_to_tray, style="Dark.TButton").pack(side="left")
         ttk.Button(buttons, text="Clear history", command=self._clear_history, style="Dark.TButton").pack(side="left", padx=8)
         ttk.Button(buttons, text="Exit", command=self.close, style="Dark.TButton").pack(side="right")
 
         self.overlay = DictationOverlay(root)
         self.hotkey = self._new_hotkey(self.hold_key)
         self.hotkey.start()
+        self.tray = TrayController(
+            lambda: self.messages.put(("tray_show", None)),
+            lambda: self.messages.put(("tray_exit", None)),
+        )
+        self.tray.start()
 
-        root.protocol("WM_DELETE_WINDOW", self.close)
+        root.protocol("WM_DELETE_WINDOW", self._hide_to_tray)
+        root.bind("<Unmap>", self._on_unmap)
         root.after(30, self._drain_messages)
         root.after(100, self._start)
 
@@ -365,6 +401,32 @@ class TranscriptWindow:
             logger.exception("Shortcut changed but could not be saved")
             self.status.set(f"Using {new_key.upper()}, but could not save it: {exc}")
 
+    def _apply_microphone(self) -> None:
+        if self.mode != "idle":
+            self.status.set("Release the dictation key before changing microphone")
+            return
+        label = self.microphone.get()
+        device_index = self.microphone_options.get(label)
+        if device_index is None:
+            self.status.set("Select a valid microphone")
+            return
+
+        try:
+            name = self.pipeline.change_microphone(device_index)
+            if self.settings is not None:
+                self.settings.set("microphone", name)
+            self.status.set(f"Microphone saved — {name}")
+            logger.info("Changed and saved microphone: %s", name)
+        except Exception as exc:
+            logger.exception("Could not change microphone")
+            current = self.pipeline.microphone.current_device_name()
+            current_label = next(
+                (option for option in self.microphone_options if option.startswith(current)),
+                current,
+            )
+            self.microphone.set(current_label)
+            self.status.set(f"Microphone error: {exc}")
+
     def _update_instruction(self) -> None:
         self.instruction.set(
             f"Hold {self.hold_key.upper()} while speaking. Release to finalize and paste into the focused application."
@@ -397,6 +459,10 @@ class TranscriptWindow:
                 self._begin_dictation(int(payload))
             elif kind == "hotkey_up":
                 self._end_dictation()
+            elif kind == "tray_show":
+                self._show_from_tray()
+            elif kind == "tray_exit":
+                self.close()
 
         self.root.after(30, self._drain_messages)
 
@@ -504,6 +570,25 @@ class TranscriptWindow:
             text = f"{text} {self.partial_text}".strip()
         return text
 
+    def _on_unmap(self, event) -> None:
+        if event.widget is self.root:
+            self.root.after(10, self._hide_if_iconic)
+
+    def _hide_if_iconic(self) -> None:
+        if self.root.state() == "iconic":
+            self._hide_to_tray()
+
+    def _hide_to_tray(self) -> None:
+        self.root.withdraw()
+        logger.info("Controller hidden to system tray")
+
+    def _show_from_tray(self) -> None:
+        self.root.deiconify()
+        self.root.state("normal")
+        self.root.lift()
+        self.root.after(50, self.root.focus_force)
+        logger.info("Controller restored from system tray")
+
     def _append_history(self, text: str) -> None:
         self.history.configure(state="normal")
         if self.history.get("1.0", "end-1c"):
@@ -516,6 +601,7 @@ class TranscriptWindow:
         self.ready = False
         self.overlay.hide()
         self.hotkey.stop()
+        self.tray.stop()
         try:
             self.pipeline.stop()
         finally:

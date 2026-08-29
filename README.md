@@ -20,6 +20,8 @@ Verified on an RTX 4060 Laptop GPU with `Headset (OnePlus Buds 4)`:
 - The recording and Thinking overlay stays bottom-centered and does not take focus.
 - Consecutive dictations receive a trailing space so phrases do not join as `coolIt`.
 - The app is launched with `pythonw.exe`; no persistent console remains open.
+- The controller hides to the Windows system tray while hotkey dictation remains active.
+- The microphone can be changed at runtime without unloading the Whisper model.
 
 ## Run
 
@@ -41,7 +43,7 @@ py -3.11 -m venv .venv
 Copy-Item .env.example .env
 ```
 
-Wait until the controller says **Ready**, then minimize it. The controller remains in the taskbar so the app has a straightforward Exit button. The recording/Thinking pill does not take focus from the application receiving the text.
+Wait until the controller says **Ready**, then choose **Minimize to tray** or use the window's minimize/close button. F8 dictation remains active while the controller is hidden. Double-click the tray icon or use **Show Local Dictation** to restore it; the tray menu also provides **Exit**. The recording/Thinking pill does not take focus from the application receiving the text.
 
 ## Configuration
 
@@ -57,9 +59,9 @@ STT_SPEECH_RMS_THRESHOLD=650
 STT_HOLD_KEY=f8
 ```
 
-Choose F6–F12 directly in the controller and click **Apply**. The key changes immediately and is saved in `settings.json` for future launches. The selected hold key is suppressed system-wide while used for dictation, so it does not also trigger the focused application's normal function-key action.
+Choose F6–F12 directly in the controller and click **Apply key**. The key changes immediately and is saved in `settings.json` for future launches. The selected hold key is suppressed system-wide while used for dictation, so it does not also trigger the focused application's normal function-key action.
 
-Copy `.env.example` to `.env` for engine, CUDA, or microphone overrides. Set `STT_MIC_DEVICE` to a distinctive substring of the preferred Windows input-device name, or leave it blank to use the Windows default at startup.
+Choose a Windows input from the **Microphone** dropdown and click **Apply mic**. The stream switches immediately without unloading faster-whisper, and the device name is saved in `settings.json`. Alternatively, set `STT_MIC_DEVICE` in `.env` to a distinctive device-name substring; leave it blank to use the Windows default at startup.
 
 The first faster-whisper launch downloads the model once. Later runs use the local cache without contacting Hugging Face.
 
@@ -95,7 +97,8 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
 | `run.ps1` | PowerShell launcher, duplicate detection, file-log redirection |
 | `settings.json` | User-selected hold key; created after Apply |
 | `.env` | Local engine/CUDA/microphone overrides; ignored by Git |
-| `realtime_stt/ui.py` | Controller, non-activating overlay, clipboard paste |
+| `realtime_stt/ui.py` | Controller, microphone/key settings, overlay, clipboard paste |
+| `realtime_stt/tray.py` | System-tray icon with Show and Exit actions |
 | `realtime_stt/hotkey.py` | Global press-and-hold listener and selective suppression |
 | `realtime_stt/pipeline.py` | Microphone gating between key-down and key-up |
 | `realtime_stt/stt/faster_whisper_local.py` | Warm CUDA model, partial revisions, forced finalization |
@@ -106,8 +109,9 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
 1. **Nothing happens on the hold key:** inspect `logs/app.log`. A healthy press shows `Hold hotkey pressed` followed by `Push-to-talk capture started`.
 2. **Press/release appears, but no transcript:** if there is no `Speech started`, check the microphone line at startup. Pin the intended device with `STT_MIC_DEVICE` if Windows changes its default input.
 3. **A final transcript appears but is not inserted:** the target may be elevated. Windows blocks a normal process from simulating paste into an Administrator process.
-4. **App already seems open:** launch it again; `run.ps1` restores the existing controller instead of starting a duplicate.
-5. **Clean restart:** use Exit in the controller, then double-click `Start Local Dictation.vbs`.
+4. **Controller disappeared:** it is probably in the Windows tray overflow (`^`). Double-click the microphone icon or choose **Show Local Dictation**.
+5. **App already seems open:** use the tray icon to restore it; the launcher will not start a duplicate.
+6. **Clean restart:** choose **Exit** from the tray or controller, then double-click `Start Local Dictation.vbs`.
 
 ## CUDA note
 

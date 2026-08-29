@@ -1,6 +1,8 @@
 deepgram-sdk==7.8.0
 faster-whisper==1.2.1
+Pillow==11.3.0
 pynput==1.8.1
+pystray==0.19.5
 python-dotenv==1.2.3
 sounddevice==0.5.6
 vosk==0.3.45
