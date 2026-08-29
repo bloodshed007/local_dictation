@@ -1,0 +1,29 @@
+# Local configuration and user preferences
+.env
+settings.json
+
+# Virtual environments and downloaded models
+.venv/
+venv/
+models/
+
+# Runtime output and recordings
+logs/
+*.log
+*.wav
+*.tmp
+
+# Python caches and build artifacts
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+build/
+dist/
+*.egg-info/
+
+# Editor and operating-system files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
