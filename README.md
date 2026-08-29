@@ -29,7 +29,7 @@ Other additions from the same session:
 
 ## Known-good snapshot — 2026-08-29
 
-Verified on an RTX 4060 Laptop GPU with `Headset (OnePlus Buds 4)`:
+Verified on a mid-range laptop NVIDIA GPU with a Bluetooth headset microphone:
 
 - F8 press starts capture; release finalizes and pastes.
 - First useful partial normally appears in about **0.3–0.5 seconds**.
@@ -60,6 +60,28 @@ py -3.11 -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 Copy-Item .env.example .env
 ```
+
+## Running on a new machine
+
+What a fresh clone does and does not set up automatically:
+
+- **Whisper model — automatic.** The first launch downloads `faster-whisper small`
+  (~464 MB) once from Hugging Face and caches it. Every later run is fully offline.
+- **Python packages — one command.** `pip install -r requirements.txt` covers
+  everything the app imports.
+- **GPU (CUDA) — the one manual step.** CTranslate2 needs CUDA 12 cuBLAS and
+  cuDNN 9 DLLs, which are *not* pip-installed by this project. The app looks for
+  them in the base Python's `torch/lib` folder, so any of these works:
+  - install PyTorch with CUDA in the base Python (`pip install torch --index-url
+    https://download.pytorch.org/whl/cu121`), or
+  - point `STT_CUDA_DLL_DIR` in `.env` at any folder containing the DLLs, or
+  - do nothing: **the app automatically falls back to CPU** (`int8`) with a status
+    message if CUDA cannot start. CPU is slower but fully functional. To skip the
+    CUDA attempt entirely, set `STT_DEVICE=cpu` and `STT_COMPUTE_TYPE=int8`.
+- **Not carried over by design:** `.env` (copy from `.env.example`),
+  `settings.json` (created when you click Apply), `vocabulary.txt` (created by
+  **Edit vocabulary**), and the optional Vosk model (`download_vosk_model.py`,
+  only needed for the experimental Vosk provider).
 
 Wait until the controller says **Ready**, then choose **Minimize to tray** or use the window's minimize/close button. F8 dictation remains active while the controller is hidden. Double-click the tray icon or use **Show Local Dictation** to restore it; the tray menu also provides **Exit**. The recording/Thinking pill does not take focus from the application receiving the text.
 
@@ -134,11 +156,13 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
 
 ## CUDA note
 
-On Windows, CTranslate2 needs CUDA 12 cuBLAS and cuDNN 9 DLLs. This app automatically detects the base Python installation's `torch/lib` folder on this PC. A different folder can be supplied with:
+On Windows, CTranslate2 needs CUDA 12 cuBLAS and cuDNN 9 DLLs. This app automatically detects the base Python installation's `torch/lib` folder. A different folder can be supplied with:
 
 ```dotenv
 STT_CUDA_DLL_DIR=C:\path\to\cuda\dlls
 ```
+
+If CUDA startup fails for any reason (missing DLLs, no NVIDIA GPU), the app logs the error and **automatically retries on CPU with `int8`**, so it still works — just with higher latency.
 
 ## Current limitations
 

@@ -100,26 +100,22 @@ class FasterWhisperStreamingSTT(StreamingSTT):
 
         try:
             self._configure_cuda_dlls()
-            from faster_whisper import WhisperModel
-
             try:
-                model = WhisperModel(
-                    self.model_name,
-                    device=self.device,
-                    compute_type=self.compute_type,
-                    local_files_only=True,
+                model = self._load_and_warm()
+            except Exception:
+                if self.device != "cuda":
+                    raise
+                # Missing CUDA runtime DLLs (cuBLAS/cuDNN) or no usable GPU.
+                # Fall back to CPU so a fresh clone still works out of the box.
+                logger.exception("CUDA startup failed; falling back to CPU (int8)")
+                self._emit_state(
+                    "loading",
+                    "CUDA unavailable — falling back to CPU (slower)…",
                 )
-                logger.info("Loaded faster-whisper model from the local cache")
-            except Exception as cache_error:
-                logger.info("Model is not cached; downloading it once: %s", cache_error)
-                self._emit_state("loading", f"Downloading faster-whisper {self.model_name} once…")
-                model = WhisperModel(
-                    self.model_name,
-                    device=self.device,
-                    compute_type=self.compute_type,
-                )
+                self.device = "cpu"
+                self.compute_type = "int8"
+                model = self._load_and_warm()
 
-            self._warm_up(model)
             self._clear_audio_queue()
             logger.info("Discarded microphone audio captured during model startup")
             logger.info("faster-whisper model ready")
@@ -271,6 +267,32 @@ class FasterWhisperStreamingSTT(StreamingSTT):
                     first_transcript_ms=first_transcript_ms,
                 )
             )
+
+    def _load_and_warm(self):
+        """Load the model (cache first, download once) and pay warm-up cost."""
+        from faster_whisper import WhisperModel
+
+        try:
+            model = WhisperModel(
+                self.model_name,
+                device=self.device,
+                compute_type=self.compute_type,
+                local_files_only=True,
+            )
+            logger.info("Loaded faster-whisper model from the local cache")
+        except Exception as cache_error:
+            logger.info("Model is not cached; downloading it once: %s", cache_error)
+            self._emit_state("loading", f"Downloading faster-whisper {self.model_name} once…")
+            model = WhisperModel(
+                self.model_name,
+                device=self.device,
+                compute_type=self.compute_type,
+            )
+
+        # Warm-up also surfaces missing cuDNN DLLs, which only fail at first
+        # inference rather than at model construction.
+        self._warm_up(model)
+        return model
 
     def _current_prompt(self) -> str | None:
         """Domain vocabulary as an initial prompt, hot-reloaded on file change."""
