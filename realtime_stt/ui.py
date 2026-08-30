@@ -792,7 +792,14 @@ class TranscriptWindow:
     def _begin_dictation(self, target_window: int) -> None:
         if not self.ready or self.mode != "idle":
             return
-        if not self.pipeline.begin_capture():
+        try:
+            if not self.pipeline.begin_capture():
+                return
+        except Exception as exc:
+            logger.exception("Could not start microphone capture")
+            self.status.set(f"Microphone reconnect failed: {exc}")
+            self.overlay.show_message("Microphone unavailable")
+            self.root.after(1600, self.overlay.hide)
             return
         self.mode = "listening"
         self.target_window = target_window

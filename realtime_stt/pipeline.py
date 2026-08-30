@@ -37,8 +37,13 @@ class TranscriptionPipeline:
         logger.info("Transcription pipeline started; waiting for push-to-talk")
 
     def begin_capture(self) -> bool:
+        if not self._running:
+            return False
+        # PortAudio streams can remain open but stop producing callbacks after
+        # Windows sleep or a Bluetooth/USB reconnect. Recover before capture.
+        self.microphone.ensure_active()
         with self._capture_lock:
-            if not self._running or self._capturing:
+            if self._capturing:
                 return False
             self._capturing = True
         logger.info("Push-to-talk capture started")

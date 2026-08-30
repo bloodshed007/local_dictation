@@ -25,6 +25,7 @@ class MicrophoneCapture:
         self.device = self._resolve_device(device)
         self._stream: sd.RawInputStream | None = None
         self._samples_captured = 0
+        self._last_callback_at = 0.0
         self._on_audio: Callable[[AudioChunk], None] | None = None
 
     def start(self, on_audio: Callable[[AudioChunk], None]) -> None:
@@ -33,6 +34,7 @@ class MicrophoneCapture:
 
         self._on_audio = on_audio
         self._samples_captured = 0
+        self._last_callback_at = time.perf_counter()
         blocksize = int(self.sample_rate * self.chunk_ms / 1000)
         self._stream = sd.RawInputStream(
             samplerate=self.sample_rate,
@@ -56,6 +58,10 @@ class MicrophoneCapture:
         """Switch the open input stream without touching the STT model."""
         resolved = self._resolve_device(device)
         if resolved == self.device:
+            # Reapplying the current device is an explicit reconnect action.
+            # Bluetooth/USB streams can remain nominally open but stop invoking
+            # callbacks after Windows sleep or a device reconnect.
+            self.ensure_active(force=True)
             return self.current_device_name()
 
         callback = self._on_audio
@@ -79,6 +85,23 @@ class MicrophoneCapture:
         logger.info("Microphone switched to: %s", name)
         return name
 
+    def ensure_active(self, force: bool = False, stale_after_seconds: float = 2.0) -> bool:
+        """Reopen a stream that stopped producing callbacks after sleep/reconnect."""
+        callback = self._on_audio
+        if self._stream is None or callback is None:
+            return False
+        stale = time.perf_counter() - self._last_callback_at > stale_after_seconds
+        if not force and not stale:
+            return False
+
+        logger.warning(
+            "Reopening microphone stream (%s)",
+            "manual reconnect" if force else "callbacks became stale",
+        )
+        self._close_stream(clear_callback=False)
+        self.start(callback)
+        return True
+
     def current_device_name(self) -> str:
         return str(sd.query_devices(self.device, kind="input")["name"])
 
@@ -100,6 +123,7 @@ class MicrophoneCapture:
             logger.warning("Microphone status: %s", status)
 
         data = bytes(indata)
+        self._last_callback_at = time.perf_counter()
         self._samples_captured += frames
         samples = array("h")
         samples.frombytes(data)
