@@ -671,8 +671,15 @@ class TranscriptWindow:
             if not VOCABULARY_PATH.exists():
                 VOCABULARY_PATH.write_text(
                     "# Custom vocabulary for dictation.\n"
-                    "# One term per line (or comma separated). Lines starting with # are ignored.\n"
-                    "# Changes apply automatically on the next dictation.\n",
+                    "# Add one term per line, or separate terms with commas.\n"
+                    "# Lines starting with # are examples/comments and are ignored.\n"
+                    "# Changes apply automatically on the next dictation.\n"
+                    "#\n"
+                    "# Examples — remove the leading # and edit for your own vocabulary:\n"
+                    "# NVIDIA\n"
+                    "# CUDA, EBITDA, PostgreSQL\n"
+                    "# Acme Corporation\n"
+                    "# Jane Doe\n",
                     encoding="utf-8",
                 )
             os.startfile(VOCABULARY_PATH)

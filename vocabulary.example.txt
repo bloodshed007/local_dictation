@@ -1,0 +1,10 @@
+# Custom vocabulary for dictation.
+# Add one term per line, or separate terms with commas.
+# Lines starting with # are examples/comments and are ignored.
+# Changes apply automatically on the next dictation.
+#
+# Examples — remove the leading # and edit for your own vocabulary:
+# NVIDIA
+# CUDA, EBITDA, PostgreSQL
+# Acme Corporation
+# Jane Doe

@@ -1,6 +1,7 @@
 # Local configuration and user preferences
 .env
 settings.json
+vocabulary.txt
 
 # Virtual environments and downloaded models
 .venv/
