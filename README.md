@@ -99,7 +99,9 @@ STT_SPEECH_RMS_THRESHOLD=650
 STT_HOLD_KEY=f8
 ```
 
-Choose F6–F12 directly in the controller and click **Apply key**. The key changes immediately and is saved in `settings.json` for future launches. The selected hold key is suppressed system-wide while used for dictation, so it does not also trigger the focused application's normal function-key action.
+Choose **F6–F12**, **Right Ctrl**, **Right Alt**, or **Right Shift** in the controller and click **Apply key**. The shortcut changes immediately and is saved in `settings.json` for future launches. The selected key is suppressed system-wide while used for dictation, so it does not also trigger the focused application's normal key action.
+
+> **Keyboard-layout note:** on many non-US layouts, Right Alt is also **AltGr**. Using it as the dictation shortcut prevents AltGr character combinations while the app is running; choose Right Ctrl instead if you rely on AltGr.
 
 Choose a Windows input from the **Microphone** dropdown and click **Apply mic**. The stream switches immediately without unloading faster-whisper, and the device name is saved in `settings.json`. Alternatively, set `STT_MIC_DEVICE` in `.env` to a distinctive device-name substring; leave it blank to use the Windows default at startup.
 

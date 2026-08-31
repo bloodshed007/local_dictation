@@ -28,6 +28,12 @@ DICTATION_MODES = {
     "Smart (tap toggles)": "smart",
 }
 OVERLAY_POSITIONS = {"Bottom": "bottom", "Top": "top"}
+SHORTCUT_OPTIONS = {
+    **{f"F{number}": f"f{number}" for number in range(6, 13)},
+    "Right Ctrl": "ctrl_r",
+    "Right Alt": "alt_r",
+    "Right Shift": "shift_r",
+}
 
 # A tap shorter than this in Smart mode latches dictation on instead of ending it.
 SMART_TAP_SECONDS = 0.35
@@ -365,13 +371,13 @@ class TranscriptWindow:
 
         controls = ttk.Frame(card, style="Card.TFrame")
         controls.pack(fill="x", pady=(12, 0))
-        ttk.Label(controls, text="Hold key", style="Card.TLabel").pack(side="left", padx=(0, 8))
-        self.shortcut = tk.StringVar(value=self.hold_key.upper())
+        ttk.Label(controls, text="Shortcut", style="Card.TLabel").pack(side="left", padx=(0, 8))
+        self.shortcut = tk.StringVar(value=self._shortcut_label())
         shortcut_picker = ttk.Combobox(
             controls,
             textvariable=self.shortcut,
-            values=tuple(f"F{number}" for number in range(6, 13)),
-            width=6,
+            values=tuple(SHORTCUT_OPTIONS),
+            width=11,
             state="readonly",
             style="Dark.TCombobox",
         )
@@ -540,8 +546,15 @@ class TranscriptWindow:
             lambda: self.messages.put(("hotkey_up", None)),
         )
 
+    def _shortcut_label(self, key_name: str | None = None) -> str:
+        key = key_name or self.hold_key
+        return next(
+            (label for label, value in SHORTCUT_OPTIONS.items() if value == key),
+            key.upper(),
+        )
+
     def _ready_hint(self) -> str:
-        key = self.hold_key.upper()
+        key = self._shortcut_label()
         if self.dictation_mode == "toggle":
             return f"press {key} to start/stop"
         if self.dictation_mode == "smart":
@@ -558,7 +571,8 @@ class TranscriptWindow:
         if self.mode != "idle":
             self.status.set("Finish the current dictation before changing the shortcut")
             return
-        new_key = self.shortcut.get().strip().lower()
+        selected = self.shortcut.get().strip()
+        new_key = SHORTCUT_OPTIONS.get(selected, selected.lower())
         if new_key == self.hold_key:
             self._set_ready_status()
             return
@@ -570,7 +584,7 @@ class TranscriptWindow:
             replacement.start()
         except Exception as exc:
             logger.exception("Could not change hold-to-talk shortcut")
-            self.shortcut.set(old_key.upper())
+            self.shortcut.set(self._shortcut_label(old_key))
             self.hotkey = self._new_hotkey(old_key)
             self.hotkey.start()
             self.status.set(f"Shortcut error: {exc}")
@@ -584,10 +598,10 @@ class TranscriptWindow:
             if self.settings is not None:
                 self.settings.set("hold_key", new_key)
             self.status.set(f"Shortcut saved — {self._ready_hint()}")
-            logger.info("Changed and saved hold-to-talk shortcut: %s", new_key.upper())
+            logger.info("Changed and saved dictation shortcut: %s", self._shortcut_label(new_key))
         except OSError as exc:
             logger.exception("Shortcut changed but could not be saved")
-            self.status.set(f"Using {new_key.upper()}, but could not save it: {exc}")
+            self.status.set(f"Using {self._shortcut_label(new_key)}, but could not save it: {exc}")
 
     def _apply_microphone(self) -> None:
         if self.mode != "idle":
@@ -689,7 +703,7 @@ class TranscriptWindow:
             self.status.set(f"Vocabulary error: {exc}")
 
     def _update_instruction(self) -> None:
-        key = self.hold_key.upper()
+        key = self._shortcut_label()
         if self.dictation_mode == "toggle":
             text = (
                 f"Press {key} to start dictating; press it again to finalize "
@@ -791,7 +805,7 @@ class TranscriptWindow:
             held_seconds = time.perf_counter() - self._key_down_at
             if held_seconds < SMART_TAP_SECONDS:
                 self._latched = True
-                self.status.set(f"Listening… tap {self.hold_key.upper()} to finish")
+                self.status.set(f"Listening… tap {self._shortcut_label()} to finish")
             else:
                 self._end_dictation()
         # Toggle mode ignores key-up entirely.
@@ -813,7 +827,7 @@ class TranscriptWindow:
         self.overlay.target_hwnd = target_window
         self.final_segments = []
         self.partial_text = ""
-        key = self.hold_key.upper()
+        key = self._shortcut_label()
         if self.dictation_mode == "toggle":
             self.status.set(f"Listening… press {key} again to paste")
         elif self.dictation_mode == "smart":
