@@ -65,11 +65,28 @@ def main() -> None:
     saved_settings = settings.load()
 
     sample_rate = 16_000
-    microphone = MicrophoneCapture(
-        sample_rate=sample_rate,
-        chunk_ms=50,
-        device=saved_settings.get("microphone", os.getenv("STT_MIC_DEVICE", "")) or None,
+    configured_microphone = (
+        saved_settings.get("microphone", os.getenv("STT_MIC_DEVICE", "")) or None
     )
+    try:
+        microphone = MicrophoneCapture(
+            sample_rate=sample_rate,
+            chunk_ms=50,
+            device=configured_microphone,
+        )
+    except RuntimeError:
+        if configured_microphone is None:
+            raise
+        logger = logging.getLogger(__name__)
+        logger.warning(
+            "Configured microphone is unavailable; using Windows default: %s",
+            configured_microphone,
+        )
+        microphone = MicrophoneCapture(
+            sample_rate=sample_rate,
+            chunk_ms=50,
+            device=None,
+        )
     pipeline = TranscriptionPipeline(microphone, build_provider(sample_rate, saved_settings))
 
     root = tk.Tk()
