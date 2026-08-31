@@ -51,7 +51,19 @@ Start Local Dictation.vbs
 
 This invokes `run.ps1`, which starts `pythonw.exe` without leaving Command Prompt or PowerShell open. Logs are written to `logs/app.log`. Launching it again restores the existing controller instead of starting a second copy.
 
-For first-time setup from PowerShell:
+For first-time setup from PowerShell, **uv is recommended**. It uses the committed lockfile and creates the `.venv` expected by the existing launcher:
+
+```powershell
+# Install uv once if needed:
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+
+git clone https://github.com/bloodshed007/local_dictation.git
+cd local_dictation
+uv sync --locked
+Copy-Item .env.example .env
+```
+
+Standard `venv` + pip remains supported as a fallback:
 
 ```powershell
 git clone https://github.com/bloodshed007/local_dictation.git
@@ -67,8 +79,9 @@ What a fresh clone does and does not set up automatically:
 
 - **Whisper model — automatic.** The first launch downloads `faster-whisper small`
   (~464 MB) once from Hugging Face and caches it. Every later run is fully offline.
-- **Python packages — one command.** `pip install -r requirements.txt` covers
-  everything the app imports.
+- **Python packages — one command.** `uv sync --locked` installs the exact
+  versions in `uv.lock` and creates `.venv`. The traditional
+  `pip install -r requirements.txt` path remains supported.
 - **GPU (CUDA) — the one manual step.** CTranslate2 needs CUDA 12 cuBLAS and
   cuDNN 9 DLLs, which are *not* pip-installed by this project. The app looks for
   them in the base Python's `torch/lib` folder, so any of these works:
@@ -137,6 +150,9 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
 |---|---|
 | `Start Local Dictation.vbs` | One-click, console-free entry point |
 | `run.ps1` | PowerShell launcher, duplicate detection, file-log redirection |
+| `pyproject.toml` | Project metadata and dependency declarations for uv |
+| `uv.lock` | Reproducible dependency lockfile |
+| `.python-version` | Python 3.11 selection for uv |
 | `settings.json` | Hold key, mode, overlay position, tuning, microphone; created after Apply |
 | `vocabulary.example.txt` | Commented public example for custom vocabulary |
 | `vocabulary.txt` | Local, git-ignored vocabulary created by **Edit vocabulary** |
