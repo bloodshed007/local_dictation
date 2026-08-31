@@ -24,6 +24,13 @@ def _int_setting(saved: dict[str, str], key: str, env_name: str, default: int) -
         return default
 
 
+def _bool_setting(saved: dict[str, str], key: str, default: bool = False) -> bool:
+    value = saved.get(key)
+    if value is None:
+        return default
+    return value.strip().casefold() in {"1", "true", "yes", "on"}
+
+
 def build_provider(sample_rate: int, saved_settings: dict[str, str]):
     provider = os.getenv("STT_PROVIDER", "faster-whisper").strip().lower()
     if provider == "faster-whisper":
@@ -87,7 +94,13 @@ def main() -> None:
             chunk_ms=50,
             device=None,
         )
-    pipeline = TranscriptionPipeline(microphone, build_provider(sample_rate, saved_settings))
+    pipeline = TranscriptionPipeline(
+        microphone,
+        build_provider(sample_rate, saved_settings),
+        release_microphone_when_idle=_bool_setting(
+            saved_settings, "release_microphone_when_idle"
+        ),
+    )
 
     root = tk.Tk()
     hold_key = saved_settings.get("hold_key", os.getenv("STT_HOLD_KEY", "f8"))

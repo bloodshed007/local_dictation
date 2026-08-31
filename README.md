@@ -27,6 +27,7 @@ Other additions from the same session:
 - **Paste-failure feedback** — if the target window cannot be focused (admin app, closed window), the app no longer pastes blind; the overlay says the text is on the clipboard.
 - **History timestamps + right-click copy** — each entry is time-stamped; right-click for "Copy this entry" / "Copy all".
 - **Live tuning** — Speech threshold (RMS) and Silence (ms) can be changed in the UI without restart; saved to `settings.json`, which overrides `.env`.
+- **Bluetooth-friendly microphone release** — enable **Release mic while idle** to close the capture device after paste/cancel, restoring normal headset media profiles and earbud Play/Pause gestures.
 - **Custom vocabulary** — click **Edit vocabulary** to open the local, git-ignored `vocabulary.txt` (one term per line or comma separated, `#` comments). The generated file includes commented examples; `vocabulary.example.txt` is also included in the repo. Terms are fed to Whisper as an initial prompt and hot-reload on the next dictation. Use it for domain terms, names, acronyms, product names, and tickers.
 
 ## Known-good snapshot — 2026-08-29
@@ -121,6 +122,8 @@ Choose **F6–F12**, **Right Ctrl**, **Right Alt**, or **Right Shift** in the co
 > **Keyboard-layout note:** on many non-US layouts, Right Alt is also **AltGr**. Using it as the dictation shortcut prevents AltGr character combinations while the app is running; choose Right Ctrl instead if you rely on AltGr.
 
 Choose a Windows input from the **Microphone** dropdown and click **Apply mic**. The stream switches immediately without unloading faster-whisper, and the device name is saved in `settings.json`. Alternatively, set `STT_MIC_DEVICE` in `.env` to a distinctive device-name substring; leave it blank to use the Windows default at startup.
+
+Enable **Release mic while idle** when a Bluetooth headset loses media quality or its Play/Pause gestures while Local Dictation is running. The app will open the mic at dictation start and close it after paste or Escape cancellation. This restores the normal Bluetooth media profile between dictations, at the cost of a short device-open delay; wait for the **Listening** overlay before speaking. Leave it disabled for the lowest possible first-word latency.
 
 The first faster-whisper launch downloads the model once. Later runs use the local cache without contacting Hugging Face.
 

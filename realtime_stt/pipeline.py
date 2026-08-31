@@ -12,9 +12,15 @@ logger = logging.getLogger(__name__)
 class TranscriptionPipeline:
     """Keeps the model warm and gates microphone audio with push-to-talk."""
 
-    def __init__(self, microphone: MicrophoneCapture, stt: StreamingSTT) -> None:
+    def __init__(
+        self,
+        microphone: MicrophoneCapture,
+        stt: StreamingSTT,
+        release_microphone_when_idle: bool = False,
+    ) -> None:
         self.microphone = microphone
         self.stt = stt
+        self.release_microphone_when_idle = release_microphone_when_idle
         self.on_level: Callable[[int], None] | None = None
         self._running = False
         self._capturing = False
@@ -28,25 +34,34 @@ class TranscriptionPipeline:
         if self._running:
             return
         self.stt.start(on_transcript, on_state)
-        try:
-            self.microphone.start(self._on_audio)
-        except Exception:
-            self.stt.stop()
-            raise
+        if not self.release_microphone_when_idle:
+            try:
+                self.microphone.start(self._on_audio)
+            except Exception:
+                self.stt.stop()
+                raise
         self._running = True
         logger.info("Transcription pipeline started; waiting for push-to-talk")
 
     def begin_capture(self) -> bool:
         if not self._running:
             return False
-        # PortAudio streams can remain open but stop producing callbacks after
-        # Windows sleep or a Bluetooth/USB reconnect. Recover before capture.
-        self.microphone.ensure_active()
         with self._capture_lock:
             if self._capturing:
                 return False
             self._capturing = True
-        logger.info("Push-to-talk capture started")
+        try:
+            if self.release_microphone_when_idle:
+                self.microphone.start(self._on_audio)
+            else:
+                # PortAudio streams can remain open but stop producing callbacks
+                # after Windows sleep or a Bluetooth/USB reconnect.
+                self.microphone.ensure_active()
+        except Exception:
+            with self._capture_lock:
+                self._capturing = False
+            raise
+        logger.info("Dictation capture started")
         return True
 
     def end_capture(self) -> bool:
@@ -56,7 +71,8 @@ class TranscriptionPipeline:
             self._capturing = False
             # The lock preserves queue ordering against the microphone callback.
             self.stt.finalize()
-        logger.info("Push-to-talk capture ended; finalization requested")
+        self._release_microphone_if_idle()
+        logger.info("Dictation capture ended; finalization requested")
         return True
 
     def cancel_capture(self) -> bool:
@@ -65,8 +81,38 @@ class TranscriptionPipeline:
                 return False
             self._capturing = False
             self.stt.cancel()
+        self._release_microphone_if_idle()
         logger.info("Dictation capture cancelled; buffered audio will be discarded")
         return True
+
+    def set_release_microphone_when_idle(self, enabled: bool) -> None:
+        with self._capture_lock:
+            if self._capturing:
+                raise RuntimeError("Finish the current dictation before changing mic behavior")
+            if enabled == self.release_microphone_when_idle:
+                return
+            self.release_microphone_when_idle = enabled
+            running = self._running
+
+        if not running:
+            return
+        try:
+            if enabled:
+                self.microphone.stop()
+            else:
+                self.microphone.start(self._on_audio)
+        except Exception:
+            self.release_microphone_when_idle = not enabled
+            raise
+        logger.info("Release microphone while idle: %s", enabled)
+
+    def _release_microphone_if_idle(self) -> None:
+        if not self.release_microphone_when_idle:
+            return
+        try:
+            self.microphone.stop()
+        except Exception:
+            logger.exception("Could not release microphone while idle")
 
     def change_microphone(self, device: str | int) -> str:
         with self._capture_lock:

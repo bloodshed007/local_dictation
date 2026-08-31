@@ -342,6 +342,17 @@ class TranscriptWindow:
             bordercolor="#3c4656",
         )
         style.map("Dark.TButton", background=[("active", "#39465a")])
+        style.configure(
+            "Dark.TCheckbutton",
+            background="#1c2028",
+            foreground="#dfe5ed",
+            font=("Segoe UI", 10),
+        )
+        style.map(
+            "Dark.TCheckbutton",
+            background=[("active", "#1c2028")],
+            foreground=[("active", "#f4f7fb")],
+        )
         style.configure("Dark.TCombobox", fieldbackground="#282e39", foreground="#f4f7fb", padding=5)
         style.map(
             "Dark.TCombobox",
@@ -454,6 +465,16 @@ class TranscriptWindow:
             command=self._edit_vocabulary,
             style="Dark.TButton",
         ).pack(side="right")
+        self.release_mic_var = tk.BooleanVar(
+            value=self.pipeline.release_microphone_when_idle
+        )
+        ttk.Checkbutton(
+            modes,
+            text="Release mic while idle",
+            variable=self.release_mic_var,
+            command=self._apply_mic_behavior,
+            style="Dark.TCheckbutton",
+        ).pack(side="right", padx=(8, 16))
 
         tuning = ttk.Frame(card, style="Card.TFrame")
         tuning.pack(fill="x", pady=(10, 0))
@@ -629,6 +650,28 @@ class TranscriptWindow:
             )
             self.microphone.set(current_label)
             self.status.set(f"Microphone error: {exc}")
+
+    def _apply_mic_behavior(self) -> None:
+        enabled = bool(self.release_mic_var.get())
+        if self.mode != "idle":
+            self.release_mic_var.set(self.pipeline.release_microphone_when_idle)
+            self.status.set("Finish the current dictation before changing mic behavior")
+            return
+        try:
+            self.pipeline.set_release_microphone_when_idle(enabled)
+            if self.settings is not None:
+                self.settings.set(
+                    "release_microphone_when_idle",
+                    "true" if enabled else "false",
+                )
+            if enabled:
+                self.status.set("Microphone will be released while idle")
+            else:
+                self.status.set("Microphone will stay active for lowest latency")
+        except Exception as exc:
+            logger.exception("Could not change microphone idle behavior")
+            self.release_mic_var.set(self.pipeline.release_microphone_when_idle)
+            self.status.set(f"Microphone behavior error: {exc}")
 
     def _apply_mode(self, _event=None) -> None:
         value = DICTATION_MODES.get(self.mode_choice.get(), "hold")
