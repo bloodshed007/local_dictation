@@ -99,6 +99,7 @@ class FasterWhisperStreamingSTT(StreamingSTT):
         )
 
         try:
+            self._configure_native_tls()
             self._configure_cuda_dlls()
             try:
                 model = self._load_and_warm()
@@ -335,6 +336,24 @@ class FasterWhisperStreamingSTT(StreamingSTT):
         )
         list(segments)
         logger.info("Model warm-up completed in %.0f ms", (time.perf_counter() - started_at) * 1000.0)
+
+    @staticmethod
+    def _configure_native_tls() -> None:
+        """Use the Windows trust store for secure first-run model downloads."""
+        if os.name != "nt":
+            return
+        try:
+            import truststore
+
+            truststore.inject_into_ssl()
+            logger.info("HTTPS downloads will use the Windows certificate store")
+        except Exception:
+            # Keep the normal certifi/Mozilla trust roots if native TLS cannot
+            # be enabled; never disable certificate verification.
+            logger.warning(
+                "Could not enable the Windows certificate store; using default TLS roots",
+                exc_info=True,
+            )
 
     def _configure_cuda_dlls(self) -> None:
         if self.device != "cuda" or os.name != "nt":

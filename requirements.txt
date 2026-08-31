@@ -5,4 +5,5 @@ pynput==1.8.1
 pystray==0.19.5
 python-dotenv==1.2.3
 sounddevice==0.5.6
+truststore==0.10.4
 vosk==0.3.45

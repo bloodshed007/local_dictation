@@ -79,6 +79,8 @@ What a fresh clone does and does not set up automatically:
 
 - **Whisper model — automatic.** The first launch downloads `faster-whisper small`
   (~464 MB) once from Hugging Face and caches it. Every later run is fully offline.
+  On Windows, HTTPS verification uses the native certificate store so managed or
+  corporate root certificates work without disabling SSL.
 - **Python packages — one command.** `uv sync --locked` installs the exact
   versions in `uv.lock` and creates `.venv`. The traditional
   `pip install -r requirements.txt` path remains supported.
@@ -179,6 +181,7 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
    ```
 
    This keeps TLS verification enabled. Do not disable SSL globally. On a managed corporate network, ensure the organization's certificate is installed in the Windows trusted certificate store.
+8. **The first Whisper model download reports an SSL/certificate error:** the app automatically uses the Windows certificate store through `truststore`. Install the required organizational/root certificate in Windows and retry. The app deliberately never disables certificate verification.
 
 ## CUDA note
 
