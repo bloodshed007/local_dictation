@@ -59,6 +59,15 @@ class TranscriptionPipeline:
         logger.info("Push-to-talk capture ended; finalization requested")
         return True
 
+    def cancel_capture(self) -> bool:
+        with self._capture_lock:
+            if not self._capturing:
+                return False
+            self._capturing = False
+            self.stt.cancel()
+        logger.info("Dictation capture cancelled; buffered audio will be discarded")
+        return True
+
     def change_microphone(self, device: str | int) -> str:
         with self._capture_lock:
             if self._capturing:

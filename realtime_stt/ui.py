@@ -544,6 +544,7 @@ class TranscriptWindow:
             key_name,
             lambda hwnd: self.messages.put(("hotkey_down", hwnd)),
             lambda: self.messages.put(("hotkey_up", None)),
+            lambda: self.messages.put(("cancel", None)),
         )
 
     def _shortcut_label(self, key_name: str | None = None) -> str:
@@ -719,7 +720,7 @@ class TranscriptWindow:
                 f"Hold {key} while speaking. Release to finalize and paste "
                 "into the focused application."
             )
-        self.instruction.set(text)
+        self.instruction.set(f"{text} Press Escape to cancel an active dictation.")
 
     def _clear_history(self) -> None:
         self.history.configure(state="normal")
@@ -751,6 +752,8 @@ class TranscriptWindow:
                     self._on_hotkey_down(int(payload))
                 elif kind == "hotkey_up":
                     self._on_hotkey_up()
+                elif kind == "cancel":
+                    self._cancel_dictation()
                 elif kind == "level":
                     self.overlay.set_level(int(payload))
                 elif kind == "tray_show":
@@ -768,16 +771,24 @@ class TranscriptWindow:
             self.ready = True
             self._set_ready_status()
         elif state == "capture_finalized":
-            self._finish_dictation()
+            if self.mode == "cancelled":
+                self._complete_cancel()
+            else:
+                self._finish_dictation()
+        elif state == "capture_cancelled":
+            if self.mode == "cancelled":
+                self._complete_cancel()
         elif state == "error":
             self.ready = False
             self.mode = "idle"
             self._latched = False
+            self.hotkey.set_cancel_enabled(False)
             self.overlay.show_message("Transcription error")
             self.root.after(1200, self.overlay.hide)
             self.status.set(f"Error: {detail}")
         elif state == "closed":
             self.ready = False
+            self.hotkey.set_cancel_enabled(False)
         elif not self.ready:
             self.status.set(detail)
 
@@ -823,6 +834,7 @@ class TranscriptWindow:
             self.root.after(1600, self.overlay.hide)
             return
         self.mode = "listening"
+        self.hotkey.set_cancel_enabled(True)
         self.target_window = target_window
         self.overlay.target_hwnd = target_window
         self.final_segments = []
@@ -846,7 +858,40 @@ class TranscriptWindow:
         self.overlay.show_thinking()
         self.pipeline.end_capture()
 
+    def _cancel_dictation(self) -> None:
+        if self.mode not in ("listening", "thinking"):
+            return
+        was_listening = self.mode == "listening"
+        self.mode = "cancelled"
+        self._latched = False
+        self.hotkey.set_cancel_enabled(False)
+        self.final_segments = []
+        self.partial_text = ""
+        self.overlay.show_message("Dictation cancelled")
+        self.status.set("Cancelling dictation…")
+        if was_listening:
+            if not self.pipeline.cancel_capture():
+                self._complete_cancel()
+        else:
+            # Finalization may already have posted its completion state. The
+            # state normally completes cancellation; this prevents a race from
+            # leaving the UI stuck if it arrived just before Escape.
+            self.root.after(
+                1000,
+                lambda: self._complete_cancel() if self.mode == "cancelled" else None,
+            )
+        logger.info("Active dictation cancelled by Escape")
+
+    def _complete_cancel(self) -> None:
+        if self.mode != "cancelled":
+            return
+        self.mode = "idle"
+        self._set_ready_status()
+        self.root.after(700, self.overlay.hide)
+
     def _apply_transcript(self, event: TranscriptEvent) -> None:
+        if self.mode not in ("listening", "thinking"):
+            return
         if event.is_final:
             if event.text.strip():
                 self.final_segments.append(event.text.strip())
@@ -867,6 +912,12 @@ class TranscriptWindow:
         self.root.after(delay_ms, lambda: self._paste_or_report(text))
 
     def _paste_or_report(self, text: str) -> None:
+        # Escape may cancel during the minimum Thinking display delay.
+        if self.mode != "thinking":
+            return
+        # From here the paste is committed; the remaining focus/paste window is
+        # only ~60 ms and Escape should return to its normal application use.
+        self.hotkey.set_cancel_enabled(False)
         if not text:
             self.overlay.show_message("No speech detected")
             self._set_ready_status()
@@ -920,6 +971,7 @@ class TranscriptWindow:
             logger.exception("Could not send Ctrl+V")
             self.status.set(f"Paste error: {exc}; text remains on the clipboard")
         finally:
+            self.hotkey.set_cancel_enabled(False)
             self.mode = "idle"
             self.overlay.hide()
 

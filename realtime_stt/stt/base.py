@@ -19,7 +19,11 @@ class StreamingSTT(ABC):
         pass
 
     def finalize(self) -> None:
-        """Finish the current push-to-talk capture without unloading the model."""
+        """Finish the current capture without unloading the model."""
+        pass
+
+    def cancel(self) -> None:
+        """Discard the current capture without producing a final transcript."""
         pass
 
     @abstractmethod

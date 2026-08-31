@@ -15,6 +15,7 @@ class GlobalHoldHotkey:
         key_name: str,
         on_down: Callable[[int], None],
         on_up: Callable[[], None],
+        on_cancel: Callable[[], None],
     ) -> None:
         self.key_name = key_name.lower().strip()
         self._target_key = self._parse_key(self.key_name)
@@ -23,7 +24,11 @@ class GlobalHoldHotkey:
             self._target_vk = self._target_key.value.vk
         self._on_down = on_down
         self._on_up = on_up
+        self._on_cancel = on_cancel
+        self._escape_vk = keyboard.Key.esc.value.vk
         self._held = False
+        self._escape_held = False
+        self._cancel_enabled = False
         self._listener: keyboard.Listener | None = None
 
     def start(self) -> None:
@@ -42,21 +47,40 @@ class GlobalHoldHotkey:
         if listener is not None:
             listener.stop()
         self._held = False
+        self._escape_held = False
+        self._cancel_enabled = False
+
+    def set_cancel_enabled(self, enabled: bool) -> None:
+        """Intercept Escape only while a dictation can still be cancelled."""
+        self._cancel_enabled = enabled
 
     def _suppress_target_key(self, message, data) -> None:
-        if data.vkCode != self._target_vk or self._listener is None:
+        if self._listener is None:
             return
 
-        # A suppressed Windows event never reaches pynput's normal on_press /
-        # on_release callbacks, so dispatch our transition before swallowing it.
-        if message in (0x0100, 0x0104):  # WM_KEYDOWN / WM_SYSKEYDOWN
-            self._handle_press(self._target_key)
-        elif message in (0x0101, 0x0105):  # WM_KEYUP / WM_SYSKEYUP
-            self._handle_release(self._target_key)
+        is_down = message in (0x0100, 0x0104)  # WM_KEYDOWN / WM_SYSKEYDOWN
+        is_up = message in (0x0101, 0x0105)  # WM_KEYUP / WM_SYSKEYUP
 
-        # Only the configured dictation key is swallowed; all other global
-        # keyboard input is allowed through unchanged.
-        self._listener.suppress_event()
+        if data.vkCode == self._target_vk:
+            # A suppressed Windows event never reaches pynput's normal
+            # callbacks, so dispatch before swallowing it.
+            if is_down:
+                self._handle_press(self._target_key)
+            elif is_up:
+                self._handle_release(self._target_key)
+            self._listener.suppress_event()
+            return
+
+        if data.vkCode == self._escape_vk and (self._cancel_enabled or self._escape_held):
+            if is_down and not self._escape_held:
+                self._escape_held = True
+                logger.info("Escape pressed; cancelling active dictation")
+                self._on_cancel()
+            elif is_up:
+                self._escape_held = False
+            # Escape is swallowed only for the active cancel gesture. At idle,
+            # it passes through to the focused application unchanged.
+            self._listener.suppress_event()
 
     def _handle_press(self, key) -> None:
         if key != self._target_key or self._held:

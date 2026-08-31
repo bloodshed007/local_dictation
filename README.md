@@ -17,6 +17,8 @@ The **Mode** dropdown in the controller selects how the dictation key behaves (s
 - **Toggle** — press once to start, press again to finalize and paste. Best for long dictations.
 - **Smart (tap toggles)** — a quick tap (< 350 ms) latches dictation on until the next tap; holding the key still works exactly like push-to-talk.
 
+In every mode, press **Escape** while Listening or Thinking to cancel and discard the active dictation. Escape is intercepted only during that cancel gesture; at idle it continues to work normally in the focused application.
+
 Other additions from the same session:
 
 - **Live VU meter** — the overlay bars now show real microphone level (RMS) instead of a canned animation, so a silent mic is instantly visible.

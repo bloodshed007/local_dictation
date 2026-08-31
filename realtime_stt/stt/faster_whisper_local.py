@@ -14,6 +14,7 @@ from .base import StateHandler, StreamingSTT, TranscriptHandler
 
 logger = logging.getLogger(__name__)
 _FINALIZE = object()
+_CANCEL = object()
 
 
 class FasterWhisperStreamingSTT(StreamingSTT):
@@ -83,6 +84,13 @@ class FasterWhisperStreamingSTT(StreamingSTT):
             logger.error("Audio queue is full; could not request finalization")
             self._emit_state("error", "Could not finalize dictation")
 
+    def cancel(self) -> None:
+        try:
+            self._audio_queue.put(_CANCEL, timeout=2.0)
+        except queue.Full:
+            logger.error("Audio queue is full; could not request cancellation")
+            self._emit_state("error", "Could not cancel dictation")
+
     def stop(self) -> None:
         self._stop_event.set()
         if self._thread and self._thread is not threading.current_thread():
@@ -143,6 +151,17 @@ class FasterWhisperStreamingSTT(StreamingSTT):
             try:
                 item = self._audio_queue.get(timeout=0.1)
             except queue.Empty:
+                continue
+
+            if item is _CANCEL:
+                logger.info("Discarding cancelled dictation audio")
+                pre_roll.clear()
+                utterance = []
+                active = False
+                silence_ms = 0
+                decoded_audio_seconds = 0.0
+                self._last_partial = ""
+                self._emit_state("capture_cancelled", "Dictation cancelled")
                 continue
 
             if item is _FINALIZE:
