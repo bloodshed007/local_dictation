@@ -172,6 +172,13 @@ On Windows, pynput's `suppress_event()` prevents its normal `on_press` and `on_r
 4. **Controller disappeared:** it is probably in the Windows tray overflow (`^`). Double-click the microphone icon or choose **Show Local Dictation**.
 5. **App already seems open:** use the tray icon to restore it; the launcher will not start a duplicate.
 6. **Clean restart:** choose **Exit** from the tray or controller, then double-click `Start Local Dictation.vbs`.
+7. **`uv sync` reports an SSL/certificate error:** retry with the Windows certificate store:
+
+   ```powershell
+   uv sync --locked --native-tls
+   ```
+
+   This keeps TLS verification enabled. Do not disable SSL globally. On a managed corporate network, ensure the organization's certificate is installed in the Windows trusted certificate store.
 
 ## CUDA note
 
